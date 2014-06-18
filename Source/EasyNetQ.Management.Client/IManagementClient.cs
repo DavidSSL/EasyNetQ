@@ -52,6 +52,13 @@ namespace EasyNetQ.Management.Client
         /// <returns></returns>
         IEnumerable<Channel> GetChannels();
 
+		/// <summary>
+		/// Gets the channel. This returns more detail, including consumers than the GetChannels method.
+		/// </summary>
+		/// <returns>The channel.</returns>
+		/// <param name="channelName">Channel name.</param>
+		Channel GetChannel (string channelName);
+
         /// <summary>
         /// A list of all exchanges.
         /// </summary>
@@ -238,6 +245,13 @@ namespace EasyNetQ.Management.Client
         /// </summary>
         /// <param name="permission">The permission to delete</param>
         void DeletePermission(Permission permission);
+
+        /// <summary>
+        /// Update the password of an user.
+        /// </summary>
+        /// <param name="userName">The name of a user</param>
+        /// <param name="newPassword">The new password to set</param>
+        User ChangeUserPassword(string userName, string newPassword);
 
         /// <summary>
         /// Declares a test queue, then publishes and consumes a message. Intended for use 

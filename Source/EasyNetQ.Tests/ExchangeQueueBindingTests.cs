@@ -1,5 +1,5 @@
-﻿// ReSharper disable InconsistentNaming
-
+﻿using System.Collections.Generic;
+// ReSharper disable InconsistentNaming
 using System.Collections;
 using EasyNetQ.Tests.Mocking;
 using EasyNetQ.Topology;
@@ -47,9 +47,9 @@ namespace EasyNetQ.Tests
                     Arg<bool>.Is.Equal(false),
                     Arg<bool>.Is.Equal(true),
                     Arg<bool>.Is.Equal(true),
-                    Arg<IDictionary>.Matches(args => 
-                        ((uint)args["x-message-ttl"] == 1000) &&
-                        ((uint)args["x-expires"] == 2000))));
+                    Arg<IDictionary<string, object>>.Matches(args => 
+                        ((int)args["x-message-ttl"] == 1000) &&
+                        ((int)args["x-expires"] == 2000))));
         }
     }
 
@@ -82,6 +82,7 @@ namespace EasyNetQ.Tests
         private MockBuilder mockBuilder;
         private IAdvancedBus advancedBus;
         private IExchange exchange;
+        private IDictionary arguments;
 
         [SetUp]
         public void SetUp()
@@ -89,7 +90,21 @@ namespace EasyNetQ.Tests
             mockBuilder = new MockBuilder();
             advancedBus = mockBuilder.Bus.Advanced;
 
-            exchange = advancedBus.ExchangeDeclare("my_exchange", ExchangeType.Direct, false, false, true, true);
+            mockBuilder.NextModel.Stub(x => x.ExchangeDeclare(null, null, false, false, null))
+                .IgnoreArguments()
+                .WhenCalled(x =>
+                    {
+                        arguments = x.Arguments[4] as IDictionary;
+                    });
+
+            exchange = advancedBus.ExchangeDeclare(
+                "my_exchange", 
+                ExchangeType.Direct, 
+                false, 
+                false, 
+                true, 
+                true, 
+                "my.alternate.exchange");
         }
 
         [Test]
@@ -108,7 +123,46 @@ namespace EasyNetQ.Tests
                     Arg<string>.Is.Equal("direct"),
                     Arg<bool>.Is.Equal(false),
                     Arg<bool>.Is.Equal(true),
-                    Arg<IDictionary>.Is.Anything));
+                    Arg<IDictionary<string, object>>.Is.Anything));
+        }
+
+        [Test]
+        public void Should_add_correct_arguments()
+        {
+            arguments.ShouldNotBeNull();
+            arguments["alternate-exchange"].ShouldEqual("my.alternate.exchange");
+        }
+    }
+
+    [TestFixture]
+    public class When_an_exchange_is_declared_passively
+    {
+        private MockBuilder mockBuilder;
+        private IAdvancedBus advancedBus;
+        private IExchange exchange;
+
+        [SetUp]
+        public void SetUp()
+        {
+            mockBuilder = new MockBuilder();
+            advancedBus = mockBuilder.Bus.Advanced;
+
+            exchange = advancedBus.ExchangeDeclare("my_exchange", ExchangeType.Direct, passive: true);
+        }
+
+        [Test]
+        public void Should_return_an_exchange_instance()
+        {
+            exchange.ShouldNotBeNull();
+            exchange.Name.ShouldEqual("my_exchange");
+        }
+
+        [Test]
+        public void Should_passively_declare_exchange()
+        {
+            mockBuilder.Channels.Count.ShouldEqual(1);
+            mockBuilder.Channels[0].AssertWasCalled(x =>
+                x.ExchangeDeclarePassive(Arg<string>.Is.Equal("my_exchange")));
         }
     }
 
@@ -194,7 +248,7 @@ namespace EasyNetQ.Tests
         [Test]
         public void Should_unbind_the_exchange()
         {
-            mockBuilder.Channels[1].AssertWasCalled(x => 
+            mockBuilder.Channels[0].AssertWasCalled(x => 
                 x.QueueUnbind("my_queue", "my_exchange", "my_routing_key", null));
         }
     }

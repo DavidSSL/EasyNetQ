@@ -14,8 +14,9 @@ namespace EasyNetQ.Hosepipe.Tests
         [SetUp]
         public void SetUp()
         {
-            conventions = new Conventions();
-            errorRetry = new ErrorRetry(new JsonSerializer());
+            var typeNameSerializer = new TypeNameSerializer();
+            conventions = new Conventions(typeNameSerializer);
+            errorRetry = new ErrorRetry(new JsonSerializer(typeNameSerializer));
         }
 
         [Test, Explicit("Requires a RabbitMQ instance and messages on disk in the given directory")]
@@ -43,7 +44,7 @@ namespace EasyNetQ.Hosepipe.Tests
                     Exchange = "", // default exchange
                     RoutingKey = "hosepipe.test",
                     Message = "Hosepipe test message",
-                    BasicProperties = new MessageBasicProperties()
+                    BasicProperties = new MessageProperties()
                 };
             var parameters = new QueueParameters
             {

@@ -26,3 +26,9 @@ Package/EasyNetQ.Management.Client/lib
 
 *.userprefs
 test-results
+
+# NuGet Packages Directory
+packages
+
+# Ignore NuGet binary
+Source/.nuget/NuGet.exe

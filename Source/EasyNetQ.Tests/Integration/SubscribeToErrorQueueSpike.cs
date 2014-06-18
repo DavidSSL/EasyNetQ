@@ -3,7 +3,6 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
-using EasyNetQ.Topology;
 using NUnit.Framework;
 
 namespace EasyNetQ.Tests.Integration
@@ -34,10 +33,7 @@ namespace EasyNetQ.Tests.Integration
                 throw new Exception("Something bad happened!");
             });
 
-            using (var channel = bus.OpenPublishChannel())
-            {
-                channel.Publish(new MyMessage{ Text = "this will inevitably fail"});
-            }
+            bus.Publish(new MyMessage{ Text = "this will inevitably fail"});
 
             // allow time for the subscription exception to throw and the 
             // error message to get written.
@@ -48,7 +44,7 @@ namespace EasyNetQ.Tests.Integration
         [Explicit("Requires a RabbitMQ server on localhost")]
         public void Should_be_able_to_subscribe_to_error_messages()
         {
-            var errorQueueName = new Conventions().ErrorQueueNamingConvention();
+            var errorQueueName = new Conventions(new TypeNameSerializer()).ErrorQueueNamingConvention();
 
             var queue = bus.Advanced.QueueDeclare(errorQueueName);
             var autoResetEvent = new AutoResetEvent(false);

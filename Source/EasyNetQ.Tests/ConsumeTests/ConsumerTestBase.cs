@@ -2,6 +2,9 @@ using System;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using EasyNetQ.Consumer;
+using EasyNetQ.Events;
+using EasyNetQ.Loggers;
 using EasyNetQ.Tests.Mocking;
 using EasyNetQ.Topology;
 using NUnit.Framework;
@@ -20,6 +23,7 @@ namespace EasyNetQ.Tests.ConsumeTests
         protected MessageProperties DeliveredMessageProperties;
         protected MessageReceivedInfo DeliveredMessageInfo;
         protected bool ConsumerWasInvoked;
+        protected CancellationTokenSource Cancellation;
 
         // populated when a message is delivered
         protected IBasicProperties OriginalProperties;
@@ -29,17 +33,18 @@ namespace EasyNetQ.Tests.ConsumeTests
         [SetUp]
         protected void SetUp()
         {
-            ConsumerErrorStrategy = MockRepository.GenerateStub<IConsumerErrorStrategy>();
-            ConsumerErrorStrategy.Stub(x => x.PostExceptionAckStrategy()).Return(PostExceptionAckStrategy.ShouldAck);
+            Cancellation = new CancellationTokenSource();
 
-            IConventions conventions = new Conventions
+            ConsumerErrorStrategy = MockRepository.GenerateStub<IConsumerErrorStrategy>();
+            
+            IConventions conventions = new Conventions(new TypeNameSerializer())
                 {
                     ConsumerTagConvention = () => ConsumerTag
                 };
             MockBuilder = new MockBuilder(x => x
-                                                   .Register(_ => conventions)
-                                                   .Register(_ => ConsumerErrorStrategy)
-                //.Register<IEasyNetQLogger>(_ => new ConsoleLogger())
+                    .Register(_ => conventions)
+                    .Register(_ => ConsumerErrorStrategy)
+                    //.Register<IEasyNetQLogger>(_ => new ConsoleLogger())
                 );
 
             AdditionalSetUp();
@@ -59,7 +64,7 @@ namespace EasyNetQ.Tests.ConsumeTests
 
                     handler(body, properties, messageInfo);
                     ConsumerWasInvoked = true;
-                }));
+                }, Cancellation.Token));
         }
 
         protected void DeliverMessage()
@@ -88,8 +93,7 @@ namespace EasyNetQ.Tests.ConsumeTests
         {
             // wait for the subscription thread to handle the message ...
             var autoResetEvent = new AutoResetEvent(false);
-            var consumerFactory = (QueueingConsumerFactory)MockBuilder.ServiceProvider.Resolve<IConsumerFactory>();
-            consumerFactory.SynchronisationAction = () => autoResetEvent.Set();
+            MockBuilder.EventBus.Subscribe<AckEvent>(x => autoResetEvent.Set());
             autoResetEvent.WaitOne(1000);
         }
     }

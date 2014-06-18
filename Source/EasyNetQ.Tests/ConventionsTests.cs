@@ -2,11 +2,10 @@
 
 using System;
 using System.Text;
+using EasyNetQ.Consumer;
 using EasyNetQ.Tests.Mocking;
 using NUnit.Framework;
 using RabbitMQ.Client;
-using RabbitMQ.Client.Events;
-using RabbitMQ.Client.Framing.v0_9_1;
 using Rhino.Mocks;
 
 namespace EasyNetQ.Tests
@@ -15,18 +14,20 @@ namespace EasyNetQ.Tests
 	public class When_using_default_conventions
 	{
 		private Conventions conventions;
+	    private ITypeNameSerializer typeNameSerializer;
 
 		[SetUp]
 		public void SetUp()
 		{
-			conventions = new Conventions();
+            typeNameSerializer = new TypeNameSerializer();
+			conventions = new Conventions(typeNameSerializer);
 		}
 
 		[Test]
 		public void The_default_exchange_naming_convention_should_use_the_TypeNameSerializers_Serialize_method()
 		{
 			var result = conventions.ExchangeNamingConvention(typeof (TestMessage));
-			result.ShouldEqual(TypeNameSerializer.Serialize(typeof (TestMessage)));
+            result.ShouldEqual(typeNameSerializer.Serialize(typeof(TestMessage)));
 		}
 
 		[Test]
@@ -41,7 +42,7 @@ namespace EasyNetQ.Tests
 		{
 			const string subscriptionId = "test";
 			var result = conventions.QueueNamingConvention(typeof (TestMessage), subscriptionId);
-			result.ShouldEqual(TypeNameSerializer.Serialize(typeof (TestMessage)) + "_" + subscriptionId);
+            result.ShouldEqual(typeNameSerializer.Serialize(typeof(TestMessage)) + "_" + subscriptionId);
 		}
 
         [Test]
@@ -54,7 +55,9 @@ namespace EasyNetQ.Tests
         [Test]
         public void The_default_error_exchange_name_should_be()
         {
-            var result = conventions.ErrorExchangeNamingConvention("routingKey");
+            var info = new MessageReceivedInfo("consumer_tag", 0, false, "exchange", "routingKey", "queue");
+
+            var result = conventions.ErrorExchangeNamingConvention(info);
             result.ShouldEqual("ErrorExchange_routingKey");
         }
 
@@ -69,19 +72,73 @@ namespace EasyNetQ.Tests
         public void The_default_rpc_routingkey_naming_convention_should_use_the_TypeNameSerializers_Serialize_method()
         {
             var result = conventions.RpcRoutingKeyNamingConvention(typeof(TestMessage));
-            result.ShouldEqual(TypeNameSerializer.Serialize(typeof(TestMessage)));
+            result.ShouldEqual(typeNameSerializer.Serialize(typeof(TestMessage)));
         }
 	}
+
+    [TestFixture]
+    public class When_using_QueueAttribute
+    {
+        private Conventions conventions;
+        private ITypeNameSerializer typeNameSerializer;
+
+        [SetUp]
+        public void SetUp()
+        {
+            typeNameSerializer = new TypeNameSerializer();
+            conventions = new Conventions(typeNameSerializer);
+        }
+
+        [Test]
+        public void The_queue_naming_convention_should_use_attribute_queueName_then_an_underscore_then_the_subscription_id()
+        {
+            const string subscriptionId = "test";
+            var result = conventions.QueueNamingConvention(typeof(AnnotatedTestMessage), subscriptionId);
+            result.ShouldEqual("MyQueue" + "_" + subscriptionId);
+        }
+
+        [Test]
+        public void And_subscription_id_is_empty_the_queue_naming_convention_should_use_attribute_queueName()
+        {
+            const string subscriptionId = "";
+            var result = conventions.QueueNamingConvention(typeof(AnnotatedTestMessage), subscriptionId);
+            result.ShouldEqual("MyQueue");
+        }
+
+        [Test]
+        public void And_queueName_is_empty_should_use_the_TypeNameSerializers_Serialize_method_then_an_underscore_then_the_subscription_id()
+        {
+            const string subscriptionId = "test";
+            var result = conventions.QueueNamingConvention(typeof(EmptyQueueNameAnnotatedTestMessage), subscriptionId);
+            result.ShouldEqual(typeNameSerializer.Serialize(typeof(EmptyQueueNameAnnotatedTestMessage)) + "_" + subscriptionId);
+        }
+
+        [Test]
+        public void The_exchange_name_convention_should_use_attribute_exchangeName()
+        {
+            var result = conventions.ExchangeNamingConvention(typeof(AnnotatedTestMessage));
+            result.ShouldEqual("MyExchange");
+        }
+
+        [Test]
+        public void And_exchangeName_not_specified_the_exchange_name_convention_should_use_the_TypeNameSerializers_Serialize_method()
+        {
+            var result = conventions.ExchangeNamingConvention(typeof(QueueNameOnlyAnnotatedTestMessage));
+            result.ShouldEqual(typeNameSerializer.Serialize(typeof(QueueNameOnlyAnnotatedTestMessage)));
+        }
+    }
 
 	[TestFixture]
 	public class When_publishing_a_message
 	{
         private MockBuilder mockBuilder;
+	    private ITypeNameSerializer typeNameSerializer;
 
 		[SetUp]
 		public void SetUp()
 		{
-            var customConventions = new Conventions
+            typeNameSerializer = new TypeNameSerializer();
+            var customConventions = new Conventions(typeNameSerializer)
             {
                 ExchangeNamingConvention = x => "CustomExchangeNamingConvention",
                 QueueNamingConvention = (x, y) => "CustomQueueNamingConvention",
@@ -89,17 +146,13 @@ namespace EasyNetQ.Tests
             };
 
             mockBuilder = new MockBuilder(x => x.Register<IConventions>(_ => customConventions));
-
-		    using (var publishChannel = mockBuilder.Bus.OpenPublishChannel())
-		    {
-                publishChannel.Publish(new TestMessage());
-		    }
+            mockBuilder.Bus.Publish(new TestMessage());
 		}
 
 		[Test]
 		public void Should_use_exchange_name_from_conventions_to_create_the_exchange()
 		{
-            mockBuilder.Channels[1].AssertWasCalled(x => 
+            mockBuilder.Channels[0].AssertWasCalled(x => 
                 x.ExchangeDeclare("CustomExchangeNamingConvention", "topic", true, false, null));
 		}
 
@@ -110,6 +163,8 @@ namespace EasyNetQ.Tests
                 x.BasicPublish(
                     Arg<string>.Is.Equal("CustomExchangeNamingConvention"), 
                     Arg<string>.Is.Anything, 
+                    Arg<bool>.Is.Equal(false),
+                    Arg<bool>.Is.Equal(false),
                     Arg<IBasicProperties>.Is.Anything,
                     Arg<byte[]>.Is.Anything));
 		}
@@ -121,6 +176,8 @@ namespace EasyNetQ.Tests
                 x.BasicPublish(
                     Arg<string>.Is.Anything,
                     Arg<string>.Is.Equal("CustomTopicNamingConvention"),
+                    Arg<bool>.Is.Equal(false),
+                    Arg<bool>.Is.Equal(false),
                     Arg<IBasicProperties>.Is.Anything,
                     Arg<byte[]>.Is.Anything));
         }
@@ -134,7 +191,7 @@ namespace EasyNetQ.Tests
         [SetUp]
         public void SetUp()
         {
-            var customConventions = new Conventions
+            var customConventions = new Conventions(new TypeNameSerializer())
             {
                 RpcExchangeNamingConvention = () => "CustomRpcExchangeName",
                 RpcRoutingKeyNamingConvention = messageType => "CustomRpcRoutingKeyName"
@@ -148,7 +205,7 @@ namespace EasyNetQ.Tests
         [Test]
         public void Should_correctly_bind_using_new_conventions()
         {
-            mockBuilder.Channels[2].AssertWasCalled(x => 
+            mockBuilder.Channels[0].AssertWasCalled(x => 
                 x.QueueBind(
                     "CustomRpcRoutingKeyName",
                     "CustomRpcExchangeName",
@@ -170,42 +227,46 @@ namespace EasyNetQ.Tests
     {
         private DefaultConsumerErrorStrategy errorStrategy;
         private MockBuilder mockBuilder;
+        private AckStrategy errorAckStrategy;
+        private AckStrategy cancelAckStrategy;
 
         [SetUp]
         public void SetUp()
         {
-            var customConventions = new Conventions
+            var customConventions = new Conventions(new TypeNameSerializer())
             {
                 ErrorQueueNamingConvention = () => "CustomEasyNetQErrorQueueName",
-                ErrorExchangeNamingConvention = originalRoutingKey => "CustomErrorExchangePrefixName." + originalRoutingKey
+                ErrorExchangeNamingConvention = info => "CustomErrorExchangePrefixName." + info.RoutingKey
             };
 
             mockBuilder = new MockBuilder();
 
             errorStrategy = new DefaultConsumerErrorStrategy(
                 mockBuilder.ConnectionFactory, 
-                new JsonSerializer(), 
+                new JsonSerializer(new TypeNameSerializer()), 
                 MockRepository.GenerateStub<IEasyNetQLogger>(), 
-                customConventions);
+                customConventions,
+                new TypeNameSerializer());
 
             const string originalMessage = "";
             var originalMessageBody = Encoding.UTF8.GetBytes(originalMessage);
 
-            var deliverArgs = new BasicDeliverEventArgs
-            {
-                RoutingKey = "originalRoutingKey",
-                Exchange = "orginalExchange",
-                Body = originalMessageBody,
-                BasicProperties = new BasicProperties
-                {
-                    CorrelationId = string.Empty,
-                    AppId = string.Empty
-                }
-            };
+            var context = new ConsumerExecutionContext(
+                (bytes, properties, arg3) => null,
+                new MessageReceivedInfo("consumerTag", 0, false, "orginalExchange", "originalRoutingKey", "queue"),
+                new MessageProperties
+                    {
+                        CorrelationId = string.Empty,
+                        AppId = string.Empty
+                    },
+                originalMessageBody,
+                MockRepository.GenerateStub<IBasicConsumer>()
+                );
 
             try
             {
-                errorStrategy.HandleConsumerError(deliverArgs, new Exception());
+                errorAckStrategy = errorStrategy.HandleConsumerError(context, new Exception());
+                cancelAckStrategy = errorStrategy.HandleConsumerCancelled(context);
             }
             catch (Exception)
             {
@@ -225,6 +286,18 @@ namespace EasyNetQ.Tests
         {
             mockBuilder.Channels[0].AssertWasCalled(x => 
                 x.QueueDeclare("CustomEasyNetQErrorQueueName", true, false, false, null));
+        }
+
+        [Test]
+        public void Should_Ack_failed_message()
+        {
+            Assert.AreSame(AckStrategies.Ack, errorAckStrategy);
+        }
+        
+        [Test]
+        public void Should_Ack_canceled_message()
+        {
+            Assert.AreSame(AckStrategies.Ack, cancelAckStrategy);
         }
     }
 }

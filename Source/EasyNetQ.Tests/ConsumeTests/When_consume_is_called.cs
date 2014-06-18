@@ -1,5 +1,8 @@
 // ReSharper disable InconsistentNaming
 
+using System.Collections.Generic;
+using System.Threading.Tasks;
+using EasyNetQ.AutoSubscribe;
 using NUnit.Framework;
 using RabbitMQ.Client;
 using Rhino.Mocks;
@@ -11,7 +14,7 @@ namespace EasyNetQ.Tests.ConsumeTests
     {
         protected override void AdditionalSetUp()
         {
-            StartConsumer((body, properties, info) => {});
+            StartConsumer((body, properties, info) => { });
         }
 
         [Test]
@@ -33,17 +36,25 @@ namespace EasyNetQ.Tests.ConsumeTests
                 Arg<string>.Is.Equal("my_queue"),
                 Arg<bool>.Is.Equal(false), // NoAck
                 Arg<string>.Is.Equal(ConsumerTag),
+                Arg<IDictionary<string, object>>.Is.Equal(new Dictionary<string, object>
+                    {
+                        {"x-priority", 0},
+                        {"x-cancel-on-ha-failover", false}
+                    }),
                 Arg<IBasicConsumer>.Is.Same(MockBuilder.Consumers[0])));
         }
 
         [Test]
         public void Should_write_debug_message()
         {
-            MockBuilder.Logger.AssertWasCalled(x => 
-                                               x.DebugWrite("Declared Consumer. queue='{0}', consumer tag='{1}' prefetchcount={2}",
-                                                            "my_queue",
-                                                            ConsumerTag,
-                                                            (ushort)50));
+            MockBuilder.Logger.AssertWasCalled(x =>
+                                               x.InfoWrite(
+                                                   "Declared Consumer. queue='{0}', consumer tag='{1}' prefetchcount={2} priority={3} x-cancel-on-ha-failover={4}",
+                                                   "my_queue",
+                                                   ConsumerTag,
+                                                   (ushort) 50, 
+                                                   0,
+                                                   false));
         }
     }
 }

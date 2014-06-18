@@ -6,12 +6,11 @@ using System.Reflection;
 using EasyNetQ.Management.Client.Model;
 using EasyNetQ.Management.Client.Serialization;
 using Newtonsoft.Json;
+using System.Diagnostics.Contracts;
+using Newtonsoft.Json.Converters;
 
 namespace EasyNetQ.Management.Client
 {
-    using System.Diagnostics.Contracts;
-    using Newtonsoft.Json.Converters;
-
     public class ManagementClient : IManagementClient
     {
         private readonly string hostUrl;
@@ -19,6 +18,8 @@ namespace EasyNetQ.Management.Client
         private readonly string password;
         private readonly int portNumber;
         public static readonly JsonSerializerSettings Settings;
+
+        private bool runningOnMono;
 
         public ManagementClient(
             string hostUrl,
@@ -57,7 +58,7 @@ namespace EasyNetQ.Management.Client
             get { return portNumber; }
         }
 
-        public ManagementClient(string hostUrl, string username, string password, int portNumber)
+        public ManagementClient(string hostUrl, string username, string password, int portNumber, bool runningOnMono = false)
         {
             if (string.IsNullOrEmpty(hostUrl))
             {
@@ -77,9 +78,11 @@ namespace EasyNetQ.Management.Client
             this.password = password;
             this.portNumber = portNumber;
 
-            
-
-            LeaveDotsAndSlashesEscaped();
+            this.runningOnMono = runningOnMono;
+			if (!runningOnMono) 
+			{
+	            LeaveDotsAndSlashesEscaped();
+			}
         }
 
         public Overview GetOverview()
@@ -117,6 +120,11 @@ namespace EasyNetQ.Management.Client
             return Get<IEnumerable<Channel>>("channels");
         }
 
+		public Channel GetChannel (string channelName)
+		{
+			return Get<Channel> (string.Format("channels/{0}", channelName));
+		}
+
         public IEnumerable<Exchange> GetExchanges()
         {
             return Get<IEnumerable<Exchange>>("exchanges");
@@ -131,7 +139,7 @@ namespace EasyNetQ.Management.Client
         public Queue GetQueue(string queueName, Vhost vhost)
         {
             return Get<Queue>(string.Format("queues/{0}/{1}",
-                SanitiseVhostName(vhost.Name), queueName));
+                SanitiseVhostName(vhost.Name), SanitiseQueueName(queueName)));
         }
 
         public Exchange CreateExchange(ExchangeInfo exchangeInfo, Vhost vhost)
@@ -212,7 +220,7 @@ namespace EasyNetQ.Management.Client
                 throw new ArgumentNullException("vhost");
             }
 
-            Put(string.Format("queues/{0}/{1}", SanitiseVhostName(vhost.Name), queueInfo.GetName()), queueInfo);
+            Put(string.Format("queues/{0}/{1}", SanitiseVhostName(vhost.Name), SanitiseQueueName(queueInfo.GetName())), queueInfo);
 
             return GetQueue(queueInfo.GetName(), vhost);
         }
@@ -224,7 +232,7 @@ namespace EasyNetQ.Management.Client
                 throw new ArgumentNullException("queue");
             }
 
-            Delete(string.Format("queues/{0}/{1}", SanitiseVhostName(queue.Vhost), queue.Name));
+            Delete(string.Format("queues/{0}/{1}", SanitiseVhostName(queue.Vhost), SanitiseQueueName(queue.Name)));
         }
 
         public IEnumerable<Binding> GetBindingsForQueue(Queue queue)
@@ -235,7 +243,7 @@ namespace EasyNetQ.Management.Client
             }
 
             return Get<IEnumerable<Binding>>(
-                string.Format("queues/{0}/{1}/bindings", SanitiseVhostName(queue.Vhost), queue.Name));
+                string.Format("queues/{0}/{1}/bindings", SanitiseVhostName(queue.Vhost), SanitiseQueueName(queue.Name)));
         }
 
         public void Purge(Queue queue)
@@ -245,7 +253,7 @@ namespace EasyNetQ.Management.Client
                 throw new ArgumentNullException("queue");
             }
 
-            Delete(string.Format("queues/{0}/{1}/contents", SanitiseVhostName(queue.Vhost), queue.Name));
+            Delete(string.Format("queues/{0}/{1}/contents", SanitiseVhostName(queue.Vhost), SanitiseQueueName(queue.Name)));
         }
 
         public IEnumerable<Message> GetMessagesFromQueue(Queue queue, GetMessagesCriteria criteria)
@@ -256,7 +264,7 @@ namespace EasyNetQ.Management.Client
             }
 
             return Post<GetMessagesCriteria, IEnumerable<Message>>(
-                string.Format("queues/{0}/{1}/get", SanitiseVhostName(queue.Vhost), queue.Name),
+                string.Format("queues/{0}/{1}/get", SanitiseVhostName(queue.Vhost), SanitiseQueueName(queue.Name)),
                 criteria);
         }
 
@@ -281,7 +289,7 @@ namespace EasyNetQ.Management.Client
             }
 
             Post<BindingInfo, object>(
-                string.Format("bindings/{0}/e/{1}/q/{2}", SanitiseVhostName(queue.Vhost), exchange.Name, queue.Name),
+                string.Format("bindings/{0}/e/{1}/q/{2}", SanitiseVhostName(queue.Vhost), exchange.Name, SanitiseQueueName(queue.Name)),
                 bindingInfo);
         }
 
@@ -318,7 +326,7 @@ namespace EasyNetQ.Management.Client
 
             return Get<IEnumerable<Binding>>(
                 string.Format("bindings/{0}/e/{1}/q/{2}", SanitiseVhostName(queue.Vhost),
-                    exchange.Name, queue.Name));
+                    exchange.Name, SanitiseQueueName(queue.Name)));
         }
 
         public void DeleteBinding(Binding binding)
@@ -455,7 +463,6 @@ namespace EasyNetQ.Management.Client
             Delete(string.Format("users/{0}", user.Name));
         }
 
-
         public IEnumerable<Permission> GetPermissions()
         {
             return Get<IEnumerable<Permission>>("permissions");
@@ -484,6 +491,18 @@ namespace EasyNetQ.Management.Client
             Delete(string.Format("permissions/{0}/{1}",
                 permission.Vhost,
                 permission.User));
+        }
+
+        public User ChangeUserPassword(string userName, string newPassword)
+        {
+            var user = GetUser(userName);
+            var tags = user.Tags.Split(',');
+            var userInfo = new UserInfo(userName, newPassword);
+            foreach (var tag in tags)
+            {
+                userInfo.AddTag(tag.Trim());
+            }
+            return CreateUser(userInfo);
         }
 
         public bool IsAlive(Vhost vhost)
@@ -533,18 +552,10 @@ namespace EasyNetQ.Management.Client
             var request = CreateRequestForPath(path);
             request.Method = "DELETE";
 
-            try
+            var response = request.GetHttpResponse();
+            if (response.StatusCode != HttpStatusCode.NoContent)
             {
-                var response = request.GetHttpResponse();
-                if (response.StatusCode != HttpStatusCode.NoContent)
-                {
-                    throw new UnexpectedHttpStatusCodeException(response.StatusCode);
-                }
-            }
-            catch (WebException webException)
-            {
-                throw new EasyNetQManagementException("Unexpected status code: {0}",
-                    ((HttpWebResponse)webException.Response).StatusCode);
+                throw new UnexpectedHttpStatusCodeException(response.StatusCode);
             }
         }
 
@@ -554,19 +565,10 @@ namespace EasyNetQ.Management.Client
             request.Method = "PUT";
             request.ContentType = "application/json";
 
-            try
+            var response = request.GetHttpResponse();
+            if (response.StatusCode != HttpStatusCode.NoContent)
             {
-                var response = request.GetHttpResponse();
-                if (response.StatusCode != HttpStatusCode.NoContent)
-                {
-                    throw new UnexpectedHttpStatusCodeException(response.StatusCode);
-                }
-            }
-            catch (WebException webException)
-            {
-                // GetBodyFromResponse((HttpWebResponse)webException.Response);
-                throw new EasyNetQManagementException("Unexpected status code: {0}",
-                    ((HttpWebResponse)webException.Response).StatusCode);
+                throw new UnexpectedHttpStatusCodeException(response.StatusCode);
             }
         }
 
@@ -577,19 +579,10 @@ namespace EasyNetQ.Management.Client
 
             InsertRequestBody(request, item);
 
-            try
+            var response = request.GetHttpResponse();
+            if (response.StatusCode != HttpStatusCode.NoContent)
             {
-                var response = request.GetHttpResponse();
-                if (response.StatusCode != HttpStatusCode.NoContent)
-                {
-                    throw new UnexpectedHttpStatusCodeException(response.StatusCode);
-                }
-            }
-            catch (WebException webException)
-            {
-                // GetBodyFromResponse((HttpWebResponse)webException.Response);
-                throw new EasyNetQManagementException("Unexpected status code: {0}",
-                    ((HttpWebResponse)webException.Response).StatusCode);
+                throw new UnexpectedHttpStatusCodeException(response.StatusCode);
             }
         }
 
@@ -630,10 +623,32 @@ namespace EasyNetQ.Management.Client
 
         private HttpWebRequest CreateRequestForPath(string path)
         {
-            var request = (HttpWebRequest)WebRequest.Create(BuildEndpointAddress(path));
+			var endpointAddress = BuildEndpointAddress (path);
+
+			var uri = new Uri (endpointAddress);
+
+			if (runningOnMono) {
+				// unsightly hack to fix path. 
+				// The default vHost in RabbitMQ is named '/' which causes all sorts of problems :(
+				// We need to escape it to %2f, but System.Uri then unescapes it back to '/'
+				// The horrible fix is to reset the path field to the original path value, after it's
+				// been set.
+				var pathField = typeof(Uri).GetField ("path", BindingFlags.Instance | BindingFlags.NonPublic);
+				if (pathField == null) {
+					throw new ApplicationException ("Could not resolve path field");
+				}
+				var alteredPath = (string)pathField.GetValue (uri);
+				alteredPath = alteredPath.Replace (@"///", @"/%2f/");
+				alteredPath = alteredPath.Replace (@"//", @"/%2f");
+				alteredPath = alteredPath.Replace ("+", "%2b");
+				pathField.SetValue (uri, alteredPath);
+			}
+
+			var request = (HttpWebRequest)WebRequest.Create(uri);
             request.Credentials = new NetworkCredential(username, password);
             return request;
         }
+
 
         private string BuildEndpointAddress(string path)
         {
@@ -643,6 +658,11 @@ namespace EasyNetQ.Management.Client
         private string SanitiseVhostName(string vhostName)
         {
             return vhostName.Replace("/", "%2f");
+        }
+
+        private string SanitiseQueueName(string queueName)
+        {
+            return queueName.Replace("+", "%2B");
         }
 
         private string RecodeBindingPropertiesKey(string propertiesKey)

@@ -4,11 +4,12 @@ using System;
 using System.Collections.Generic;
 using System.Text;
 using System.Threading;
+using EasyNetQ.Consumer;
 using EasyNetQ.Loggers;
 using EasyNetQ.SystemMessages;
 using NUnit.Framework;
-using RabbitMQ.Client.Events;
-using RabbitMQ.Client.Framing.v0_9_1;
+using RabbitMQ.Client;
+using Rhino.Mocks;
 
 namespace EasyNetQ.Tests
 {
@@ -23,7 +24,7 @@ namespace EasyNetQ.Tests
         [SetUp]
         public void SetUp()
         {
-            connectionFactory = new ConnectionFactoryWrapper(new ConnectionConfiguration
+            var configuration = new ConnectionConfiguration
             {
                 Hosts = new List<IHostConfiguration>
                 {
@@ -31,10 +32,20 @@ namespace EasyNetQ.Tests
                 },
                 UserName = "guest",
                 Password = "guest"
-            }, new DefaultClusterHostSelectionStrategy<ConnectionFactoryInfo>());
-            serializer = new JsonSerializer();
-            conventions = new Conventions();
-            consumerErrorStrategy = new DefaultConsumerErrorStrategy(connectionFactory, serializer, new ConsoleLogger(), conventions);
+            };
+
+            configuration.Validate();
+
+            var typeNameSerializer = new TypeNameSerializer();
+            connectionFactory = new ConnectionFactoryWrapper(configuration, new DefaultClusterHostSelectionStrategy<ConnectionFactoryInfo>());
+            serializer = new JsonSerializer(typeNameSerializer);
+            conventions = new Conventions(typeNameSerializer);
+            consumerErrorStrategy = new DefaultConsumerErrorStrategy(
+                connectionFactory, 
+                serializer, 
+                new ConsoleLogger(), 
+                conventions,
+                typeNameSerializer);
          
         }
 
@@ -47,20 +58,21 @@ namespace EasyNetQ.Tests
             const string originalMessage = "{ Text:\"Hello World\"}";
             var originalMessageBody = Encoding.UTF8.GetBytes(originalMessage);
 
-            var deliverArgs = new BasicDeliverEventArgs
-            {
-                RoutingKey = "originalRoutingKey",
-                Exchange = "orginalExchange",
-                Body = originalMessageBody,
-                BasicProperties = new BasicProperties
+            var exception = new Exception("I just threw!");
+
+            var context = new ConsumerExecutionContext(
+                (bytes, properties, arg3) => null,
+                new MessageReceivedInfo("consumertag", 0, false, "orginalExchange", "originalRoutingKey", "queue"),
+                new MessageProperties
                 {
                     CorrelationId = "123",
                     AppId = "456"
-                }
-            };
-            var exception = new Exception("I just threw!");
+                },
+                originalMessageBody,
+                MockRepository.GenerateStub<IBasicConsumer>()
+                );
 
-            consumerErrorStrategy.HandleConsumerError(deliverArgs, exception);
+            consumerErrorStrategy.HandleConsumerError(context, exception);
 
             Thread.Sleep(100);
 
@@ -77,22 +89,15 @@ namespace EasyNetQ.Tests
                 {
                     var message = serializer.BytesToMessage<Error>(getArgs.Body);
 
-                    message.RoutingKey.ShouldEqual(deliverArgs.RoutingKey);
-                    message.Exchange.ShouldEqual(deliverArgs.Exchange);
+                    message.RoutingKey.ShouldEqual(context.Info.RoutingKey);
+                    message.Exchange.ShouldEqual(context.Info.Exchange);
                     message.Message.ShouldEqual(originalMessage);
                     message.Exception.ShouldEqual("System.Exception: I just threw!");
                     message.DateTime.Date.ShouldEqual(DateTime.Now.Date);
-                    message.BasicProperties.CorrelationId.ShouldEqual(deliverArgs.BasicProperties.CorrelationId);
-                    message.BasicProperties.AppId.ShouldEqual(deliverArgs.BasicProperties.AppId);
+                    message.BasicProperties.CorrelationId.ShouldEqual(context.Properties.CorrelationId);
+                    message.BasicProperties.AppId.ShouldEqual(context.Properties.AppId);
                 }
             }
-        }
-
-        [Test]
-        public void Should_ack_after_exception_is_handled()
-        {
-            consumerErrorStrategy.PostExceptionAckStrategy()
-                .ShouldEqual(PostExceptionAckStrategy.ShouldAck);
         }
     }
 }

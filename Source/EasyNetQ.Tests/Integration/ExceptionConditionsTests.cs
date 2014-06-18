@@ -1,7 +1,9 @@
 // ReSharper disable InconsistentNaming
 using System;
 using System.Threading;
-using EasyNetQ.Tests.Integration;
+using System.Threading.Tasks;
+using EasyNetQ.Loggers;
+using EasyNetQ.Management.Client;
 
 namespace EasyNetQ.Tests
 {
@@ -20,11 +22,7 @@ namespace EasyNetQ.Tests
                     Thread.Sleep(2000);
                     try
                     {
-                        using (var publishChannel = bus.OpenPublishChannel())
-                        {
-                            publishChannel.Publish(new MyMessage { Text = "Hello" });
-                        }
-
+                        bus.Publish(new MyMessage { Text = "Hello" });
                         Console.WriteLine("Published OK");
                     }
                     catch (EasyNetQException exception)
@@ -39,12 +37,9 @@ namespace EasyNetQ.Tests
             where T : ErrorTestBaseMessage, new()
         {
             Console.WriteLine("Subscriber {0} got: {1} {2}", name, message.Text, message.Id);
-            Thread.Sleep(2000);
+            Thread.Sleep(1000);
             while (!bus.IsConnected) Thread.Sleep(100);
-            using (var publishChannel = bus.OpenPublishChannel())
-            {
-                publishChannel.Publish(new T { Text = "Hello From " + name, Id = ++message.Id });
-            }
+            bus.Publish(new T { Text = "Hello From " + name, Id = ++message.Id });
         }
 
         /// <summary>
@@ -53,6 +48,8 @@ namespace EasyNetQ.Tests
         /// </summary>
         public void Server_goes_away_and_comes_back_during_subscription()
         {
+            //Task.Factory.StartNew(OccasionallyKillConnections, TaskCreationOptions.LongRunning);
+
             Console.WriteLine("Creating busses");
             using (var busA = RabbitHutch.CreateBus("host=localhost"))
             using (var busB = RabbitHutch.CreateBus("host=localhost"))
@@ -65,15 +62,81 @@ namespace EasyNetQ.Tests
 
                 Console.WriteLine("Subscribed");
 
-                while(!busB.IsConnected) Thread.Sleep(100);
-                using (var publishChannel = busA.OpenPublishChannel())
-                {
-                    publishChannel.Publish(new FromA { Text = "Initial From A ", Id = 0 });
-                }
+                busA.Publish(new FromA { Text = "Initial From A ", Id = 0 });
 
                 while (true)
                 {
                     Thread.Sleep(2000);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Simulates a consumer with many messages queued up in the internal consumer queue.
+        /// </summary>
+        public void Long_running_consumer_survives_broker_restart()
+        {
+            using (var publishBus = RabbitHutch.CreateBus("host=localhost;timeout=60", register => 
+                register.Register<IEasyNetQLogger>(_ => new NullLogger())))
+            using (var subscribeBus = RabbitHutch.CreateBus("host=localhost"))
+            {
+                subscribeBus.Subscribe<MyMessage>("longRunner", message =>
+                    {
+                        Console.Out.WriteLine("Got message: {0}", message.Text);
+                        Thread.Sleep(2000);
+                        Console.Out.WriteLine("Completed  : {0}", message.Text);
+                    });
+
+                var counter = 0;
+                while (true)
+                {
+                    Thread.Sleep(1000);
+                    publishBus.Publish(new MyMessage
+                        {
+                            Text = string.Format("Hello <{0}>", counter)
+                        });
+                    counter++;
+                }
+            }
+        }
+
+        public void Check()
+        {
+            CleanUp(new ManagementClient("http://localhost", "guest", "guest", 15672));
+        }
+
+        public void CleanUp(IManagementClient client)
+        {
+            foreach (var queue in client.GetQueues())
+            {
+                Console.Out.WriteLine("Deleting Queue: {0}", queue.Name);
+                client.DeleteQueue(queue);
+            }
+            foreach (var exchange in client.GetExchanges())
+            {
+                if (!exchange.Name.StartsWith("amp."))
+                {
+                    Console.Out.WriteLine("Deleting Exchange: {0}", exchange.Name);
+                    client.DeleteExchange(exchange);
+                }
+            }            
+        }
+
+        public void OccasionallyKillConnections()
+        {
+            OccasionallyKillConnections(new ManagementClient("http://localhost", "guest", "guest", 15672));
+        }
+
+        public void OccasionallyKillConnections(IManagementClient client)
+        {
+            while (true)
+            {
+                Thread.Sleep(3000);
+                var connections = client.GetConnections();
+                foreach (var connection in connections)
+                {
+                    Console.Out.WriteLine("\nKilling connection: {0}\n", connection.Name);
+                    client.CloseConnection(connection);
                 }
             }
         }
